@@ -1,213 +1,158 @@
--- Developer-only testing GUI for "perfect hit" (Testing tool only)
--- Place as a LocalScript in StarterPlayerScripts or inside a ScreenGui
+-- Developer Testing GUI
+-- Safe version for your own Roblox game
+
+-- Services
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local LocalPlayer = Players.LocalPlayer
 
--- Put your allowed user ids here (your Roblox account id)
-local ALLOWED_USER_IDS = { 12345678 } -- << replace with your user id(s)
-
-local function isAllowed()
-	-- Allow in Studio OR if the player's user id is in the allowed list
-	if RunService:IsStudio() then return true end
-	for _, id in ipairs(ALLOWED_USER_IDS) do
-		if LocalPlayer.UserId == id then return true end
-	end
-	return false
+-- Player check (only game owner/devs can see GUI)
+local player = Players.LocalPlayer
+if player.UserId ~= game.CreatorId then
+	return -- don’t show GUI to regular players
 end
 
-if not isAllowed() then
-	warn("[DevTool] Developer testing GUI disabled for this user.")
-	return
-end
-
--- Remote paths (based on your message)
-local pickaxeMineFunc = LocalPlayer.Character and LocalPlayer.Character:WaitForChild("Steady Pickaxe", 5) and LocalPlayer.Character["Steady Pickaxe"]:FindFirstChild("pickaxeMine")
-local minigameStartEvent = LocalPlayer.Character and LocalPlayer.Character:WaitForChild("Steady Pickaxe", 5) and LocalPlayer.Character["Steady Pickaxe"]:FindFirstChild("minigameStart")
--- Alternatively use ReplicatedStorage Events if they are stored there:
-local rsPickaxeMine = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("pickaxeMine")
-local meteorEvent = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("MeteorShower")
-local birthdayEvent = ReplicatedStorage:FindFirstChild("Events") and ReplicatedStorage.Events:FindFirstChild("BirthdayClaim")
-
--- Helper to safely call InvokeServer/FireServer
-local function safeInvoke(fn, args)
-	if not fn then
-		warn("[DevTool] remote not found")
-		return false
-	end
-	local ok, err = pcall(function()
-		if typeof(fn) == "Instance" and fn:IsA("RemoteFunction") then
-			fn:InvokeServer(unpack(args or {}))
-		elseif typeof(fn) == "Instance" and fn:IsA("RemoteEvent") then
-			fn:FireServer(unpack(args or {}))
-		else
-			-- if we were given a function object (from Character path), try calling
-			if type(fn) == "function" then
-				fn(unpack(args or {}))
-			end
-		end
-	end)
-	if not ok then
-		warn("[DevTool] remote call failed:", err)
-		return false
-	end
-	return true
-end
-
--- Create simple GUI
+-- Create GUI
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DevPerfectHitGUI"
+screenGui.Name = "DeveloperTestingGUI"
 screenGui.ResetOnSpawn = false
-screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 260, 0, 160)
-frame.Position = UDim2.new(0, 20, 0, 120)
-frame.BackgroundTransparency = 0.15
-frame.BackgroundColor3 = Color3.fromRGB(30,30,30)
-frame.BorderSizePixel = 0
-frame.Parent = screenGui
+-- Tabs container
+local tabsFrame = Instance.new("Frame")
+tabsFrame.Size = UDim2.new(0, 220, 0, 300)
+tabsFrame.Position = UDim2.new(0, 25, 0.3, 0)
+tabsFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+tabsFrame.BorderSizePixel = 0
+tabsFrame.Parent = screenGui
 
-local uiCorner = Instance.new("UICorner", frame)
-uiCorner.CornerRadius = UDim.new(0, 8)
+local uiCorner = Instance.new("UICorner", tabsFrame)
+uiCorner.CornerRadius = UDim.new(0, 10)
 
-local function makeButton(text, posY)
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundTransparency = 1
+title.Text = "Developer GUI"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 20
+title.Parent = tabsFrame
+
+local scrolling = Instance.new("ScrollingFrame")
+scrolling.Size = UDim2.new(1, 0, 1, -40)
+scrolling.Position = UDim2.new(0, 0, 0, 40)
+scrolling.BackgroundTransparency = 1
+scrolling.CanvasSize = UDim2.new(0, 0, 0, 600)
+scrolling.ScrollBarThickness = 6
+scrolling.Parent = tabsFrame
+
+local layout = Instance.new("UIListLayout", scrolling)
+layout.Padding = UDim.new(0, 6)
+
+-- Helper to create a button
+local function makeButton(text, color)
 	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0, 220, 0, 28)
-	b.Position = UDim2.new(0, 20, 0, posY)
+	b.Size = UDim2.new(1, -10, 0, 35)
+	b.BackgroundColor3 = color
 	b.Text = text
-	b.Font = Enum.Font.SourceSans
-	b.TextSize = 18
-	b.Parent = frame
-	b.BackgroundTransparency = 0.08
-	b.BorderSizePixel = 0
-	b.TextColor3 = Color3.fromRGB(240,240,240)
-	local c = Instance.new("UICorner", b)
-	c.CornerRadius = UDim.new(0,6)
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamSemibold
+	b.TextSize = 16
+	b.AutoButtonColor = true
+	local corner = Instance.new("UICorner", b)
+	corner.CornerRadius = UDim.new(0, 6)
+	b.Parent = scrolling
 	return b
 end
 
-local btnHitOnce = makeButton("Perfect Hit (Once)", 12)
-local btnToggleAuto = makeButton("Start Auto (Dev Only)", 52)
-local btnMinigame = makeButton("Trigger minigameStart", 92)
-local btnMeteor = makeButton("Trigger MeteorShower", 132)
-local btnBirthday = makeButton("Trigger BirthdayClaim", 172)
+------------------------------------------------
+-- 🪓 MINING TOOLS TAB
+------------------------------------------------
+local miningLabel = Instance.new("TextLabel")
+miningLabel.Text = "🪓 Mining Tools"
+miningLabel.Size = UDim2.new(1, 0, 0, 25)
+miningLabel.BackgroundTransparency = 1
+miningLabel.TextColor3 = Color3.fromRGB(255, 255, 180)
+miningLabel.Font = Enum.Font.GothamBold
+miningLabel.TextSize = 18
+miningLabel.Parent = scrolling
 
--- Keep track of auto toggle
-local autoOn = false
-local autoDelay = 0.6 -- seconds between automated perfect hits (tweak for testing)
-
--- Utility to assemble args like you provided
-local function buildPickaxeArgs()
-	-- Example args you gave:
-	-- local args = {
-	--     Instance.new("Part", nil),
-	--     0,
-	--     Enum.NormalId.Front
-	-- }
-	-- If you need a different set of args for pickaxeMine, change here.
-	local part = Instance.new("Part")
-	part.Name = "DevHitPart"
-	-- parent remains nil to avoid spamming workspace; it's fine for testing payload
-	local args = { part, 0, Enum.NormalId.Front }
-	return args
-end
-
--- Perform a single perfect hit
-local function doPerfectHitOnce()
-	-- Prefer remote under character (tools) if present; otherwise try ReplicatedStorage.Events
-	local charPickaxeMine = nil
-	if LocalPlayer.Character then
-		local sp = LocalPlayer.Character:FindFirstChild("Steady Pickaxe")
-		if sp then
-			charPickaxeMine = sp:FindFirstChild("pickaxeMine") or sp:FindFirstChild("pickaxeMineFunc")
-		end
-	end
-
-	local remoteToUse = charPickaxeMine or rsPickaxeMine
-	if not remoteToUse then
-		warn("[DevTool] pickaxeMine RemoteFunction not found in Character or ReplicatedStorage.Events")
+local btnPerfectHit = makeButton("Trigger Perfect Hit", Color3.fromRGB(85, 170, 255))
+btnPerfectHit.MouseButton1Click:Connect(function()
+	local char = player.Character
+	if not char then return end
+	local tool = char:FindFirstChild("Steady Pickaxe")
+	if not tool then
+		warn("Pickaxe not found.")
 		return
 	end
 
-	local args = buildPickaxeArgs()
-	safeInvoke(remoteToUse, args)
-end
+	-- simulate minigame start (dev only)
+	local fakeOre = Instance.new("Part")
+	fakeOre.Name = "DebugOre"
+	fakeOre.Anchored = true
+	fakeOre.Size = Vector3.new(2,2,2)
+	fakeOre.CFrame = char:GetPivot() * CFrame.new(0, 0, -5)
+	fakeOre.Parent = workspace
+	task.delay(3, function() fakeOre:Destroy() end)
 
--- Auto loop
-spawn(function()
-	while true do
-		if autoOn then
-			-- check tool presence
-			local hasTool = false
-			if LocalPlayer.Character then
-				hasTool = LocalPlayer.Character:FindFirstChild("Steady Pickaxe") ~= nil
-			end
-			if hasTool then
-				doPerfectHitOnce()
-			else
-				-- optionally try to use rep storage
-				doPerfectHitOnce()
-			end
-		end
-		wait(autoDelay)
+	local pickaxeEvent = tool:FindFirstChild("minigameStart")
+	if pickaxeEvent then
+		pickaxeEvent:FireServer(fakeOre)
+	end
+
+	local perfect = tool:FindFirstChild("pickaxeMine")
+	if perfect then
+		task.wait(0.5)
+		perfect:InvokeServer(fakeOre, 0, Enum.NormalId.Front)
 	end
 end)
 
--- Button events
-btnHitOnce.MouseButton1Click:Connect(function()
-	doPerfectHitOnce()
-end)
+------------------------------------------------
+-- 🌠 EVENTS TAB
+------------------------------------------------
+local eventsLabel = Instance.new("TextLabel")
+eventsLabel.Text = "🌠 Global Events"
+eventsLabel.Size = UDim2.new(1, 0, 0, 25)
+eventsLabel.BackgroundTransparency = 1
+eventsLabel.TextColor3 = Color3.fromRGB(180, 255, 180)
+eventsLabel.Font = Enum.Font.GothamBold
+eventsLabel.TextSize = 18
+eventsLabel.Parent = scrolling
 
-btnToggleAuto.MouseButton1Click:Connect(function()
-	autoOn = not autoOn
-	btnToggleAuto.Text = autoOn and "Stop Auto (Dev Only)" or "Start Auto (Dev Only)"
-end)
-
-btnMinigame.MouseButton1Click:Connect(function()
-	-- build args for minigameStart if needed
-	local mgArgs = { Instance.new("Part", nil) }
-	local charMG = nil
-	if LocalPlayer.Character then
-		local sp = LocalPlayer.Character:FindFirstChild("Steady Pickaxe")
-		if sp then
-			charMG = sp:FindFirstChild("minigameStart")
-		end
-	end
-	local mgRemote = charMG or (ReplicatedStorage.Events and ReplicatedStorage.Events:FindFirstChild("minigameStart"))
-	if mgRemote then
-		safeInvoke(mgRemote, mgArgs)
-	else
-		warn("[DevTool] minigameStart not found.")
-	end
-end)
-
+local btnMeteor = makeButton("Trigger Meteor Shower", Color3.fromRGB(255, 100, 100))
 btnMeteor.MouseButton1Click:Connect(function()
-	if meteorEvent then
-		safeInvoke(meteorEvent, {}) -- adjust args if required by your event
-	else
-		warn("[DevTool] MeteorShower event not found in ReplicatedStorage.Events")
+	local ev = ReplicatedStorage:FindFirstChild("Events")
+	if ev and ev:FindFirstChild("MeteorShower") then
+		ev.MeteorShower:Fire()
 	end
 end)
 
+local btnBirthday = makeButton("Trigger Birthday Claim", Color3.fromRGB(255, 200, 100))
 btnBirthday.MouseButton1Click:Connect(function()
-	if birthdayEvent then
-		safeInvoke(birthdayEvent, {})
-	else
-		warn("[DevTool] BirthdayClaim event not found in ReplicatedStorage.Events")
+	local ev = ReplicatedStorage:FindFirstChild("Events")
+	if ev and ev:FindFirstChild("BirthdayClaim") then
+		ev.BirthdayClaim:Fire()
 	end
 end)
 
--- Small on-screen note
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(0, 220, 0, 18)
-label.Position = UDim2.new(0, 20, 0, 200)
-label.BackgroundTransparency = 1
-label.Text = "DEV TEST TOOL — Studio / Allowed users only"
-label.TextSize = 14
-label.Font = Enum.Font.SourceSansItalic
-label.TextColor3 = Color3.fromRGB(200,200,200)
-label.Parent = frame
+------------------------------------------------
+-- 🧰 DEV UTILITIES TAB
+------------------------------------------------
+local devLabel = Instance.new("TextLabel")
+devLabel.Text = "🧰 Developer Tools"
+devLabel.Size = UDim2.new(1, 0, 0, 25)
+devLabel.BackgroundTransparency = 1
+devLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+devLabel.Font = Enum.Font.GothamBold
+devLabel.TextSize = 18
+devLabel.Parent = scrolling
 
-print("[DevTool] Developer perfect-hit GUI initialized.")
+local btnReload = makeButton("Reload Character", Color3.fromRGB(120, 120, 255))
+btnReload.MouseButton1Click:Connect(function()
+	player:LoadCharacter()
+end)
+
+local btnResetCam = makeButton("Reset Camera", Color3.fromRGB(180, 120, 255))
+btnResetCam.MouseButton1Click:Connect(function()
+	workspace.CurrentCamera.CameraSubject = player.Character:WaitForChild("Humanoid")
+end)
