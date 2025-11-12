@@ -163,6 +163,11 @@ layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Padding = UDim.new(0, 6)
 layout.Parent = scroll
 
+-- Make the scrolling responsive by updating CanvasSize when content changes
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
+end)
+
 -- For storing UI objects and part bookkeeping
 local oreButtons = {} -- oreName -> { Button, CountLabel }
 local partsByName = {} -- oreName -> { parts = { [part] = true }, count = n }
