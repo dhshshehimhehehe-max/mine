@@ -1,9 +1,9 @@
 -- TeleportOreUI.lua
--- LocalScript — same functionality as before but optimized to avoid freezing when the UI loads.
--- Changes in this version:
---  - Made the scrolling frame respond to mouse wheel and draggable scrollbar (set Active & Selectable).
---  - Each category grid now auto-resizes to its UIGridLayout content so category labels and grids don't overlap.
---  - No other behavior was changed.
+-- LocalScript — previous functionality preserved, with a lightweight search UI added
+-- - Adds a search TextBox/button in the title bar so you can quickly find ores.
+-- - Search is case-insensitive and filters visible buttons (doesn't recreate UI).
+-- - Categories hide automatically when no ores in them match the search.
+-- - Lightweight debounce applied so typing doesn't trigger too many updates.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -98,7 +98,7 @@ titleBar.Parent = mainFrame
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Name = "Title"
-titleLabel.Size = UDim2.new(1, -100, 1, 0)
+titleLabel.Size = UDim2.new(1, -190, 1, 0) -- reduced width to fit search box & other buttons
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Text = "Ore Teleport"
@@ -132,6 +132,31 @@ toggleCountsBtn.TextSize = 14
 toggleCountsBtn.TextColor3 = Color3.fromRGB(220,220,220)
 toggleCountsBtn.Parent = titleBar
 
+-- Search UI: TextBox + Clear button (placed in title bar)
+local searchBox = Instance.new("TextBox")
+searchBox.Name = "SearchBox"
+searchBox.Size = UDim2.new(0, 140, 0, 22)
+searchBox.Position = UDim2.new(1, -250, 0, 6)
+searchBox.PlaceholderText = "Search ores..."
+searchBox.BackgroundColor3 = Color3.fromRGB(50,50,55)
+searchBox.Text = ""
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 14
+searchBox.TextColor3 = Color3.fromRGB(230,230,230)
+searchBox.Parent = titleBar
+searchBox.ClearTextOnFocus = false
+
+local clearSearchBtn = Instance.new("TextButton")
+clearSearchBtn.Name = "ClearSearch"
+clearSearchBtn.Size = UDim2.new(0, 22, 0, 22)
+clearSearchBtn.Position = UDim2.new(1, -106, 0, 6)
+clearSearchBtn.BackgroundColor3 = Color3.fromRGB(60,60,65)
+clearSearchBtn.Text = "X"
+clearSearchBtn.Font = Enum.Font.GothamBold
+clearSearchBtn.TextSize = 14
+clearSearchBtn.TextColor3 = Color3.fromRGB(220,220,220)
+clearSearchBtn.Parent = titleBar
+
 local contentFrame = Instance.new("Frame")
 contentFrame.Name = "Content"
 contentFrame.Size = UDim2.new(1, 0, 1, -34)
@@ -146,7 +171,6 @@ scroll.Position = UDim2.new(0, 6, 0, 6)
 scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 scroll.BackgroundTransparency = 1
 scroll.ScrollBarThickness = 6
--- Make the scrolling frame accept mouse wheel and scrollbar dragging
 scroll.Active = true
 scroll.Selectable = true
 scroll.Parent = contentFrame
@@ -156,15 +180,19 @@ layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Padding = UDim.new(0, 6)
 layout.Parent = scroll
 
--- Update scroll canvas size when outer list layout changes
+-- Make the scrolling responsive by updating CanvasSize when content changes
 layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
 end)
 
-local oreButtons = {}
-local partsByName = {}
-local partConnections = {}
+-- For storing UI objects and bookkeeping
+local oreButtons = {} -- oreName -> { Button, CountLabel }
+local oreCategory = {} -- oreName -> category
+local categoriesCreated = {} -- catName -> true
+local partsByName = {} -- oreName -> { parts = { [part] = true }, count = n }
+local partConnections = {} -- part -> connection
 
+-- Highlight (unchanged)
 local currentHighlight = nil
 local function clearHighlight()
     if currentHighlight and currentHighlight.Parent then
@@ -223,6 +251,8 @@ end
 -- Create category frames (if needed) and grid containers
 local function ensureCategoryExists(catName)
     if scroll:FindFirstChild("Grid_" .. catName) then return end
+    categoriesCreated[catName] = true
+
     local catFrame = Instance.new("Frame")
     catFrame.Name = "Category_" .. catName
     catFrame.Size = UDim2.new(1, -6, 0, 28)
@@ -240,7 +270,6 @@ local function ensureCategoryExists(catName)
 
     local grid = Instance.new("Frame")
     grid.Name = "Grid_" .. catName
-    -- start at zero height; it will expand as children are added
     grid.Size = UDim2.new(1, 0, 0, 0)
     grid.BackgroundTransparency = 1
     grid.Parent = scroll
@@ -262,6 +291,7 @@ end
 local function createButtonForOre(oreName)
     if oreButtons[oreName] then return end
     local cat = categorizeOre(oreName)
+    oreCategory[oreName] = cat
     ensureCategoryExists(cat)
     local grid = scroll:FindFirstChild("Grid_" .. cat)
     if not grid then return end
@@ -300,6 +330,7 @@ local function createButtonForOre(oreName)
     }
 end
 
+-- Build all buttons from master list in batches to avoid freezing
 local function buildButtonsInBatches(list, batchSize)
     batchSize = batchSize or 25
     local i = 1
@@ -426,6 +457,63 @@ toggleCountsBtn.MouseButton1Click:Connect(function()
             v.Count.Visible = showCounts
         end
     end
+end)
+
+-- Search/filter logic
+local function applySearch(query)
+    local q = (query or ""):lower()
+    -- toggle button visibility based on search
+    for oreName, obj in pairs(oreButtons) do
+        if obj and obj.Button then
+            local visible = (q == "") or (string.find(oreName:lower(), q, 1, true) ~= nil)
+            obj.Button.Visible = visible
+        end
+    end
+
+    -- For each category, hide the category label + grid if no visible buttons inside
+    for cat, _ in pairs(categoriesCreated) do
+        local grid = scroll:FindFirstChild("Grid_" .. cat)
+        local catFrame = scroll:FindFirstChild("Category_" .. cat)
+        if grid then
+            local anyVisible = false
+            for _, child in ipairs(grid:GetChildren()) do
+                if child:IsA("TextButton") and child.Visible then
+                    anyVisible = true
+                    break
+                end
+            end
+            grid.Visible = anyVisible
+            if catFrame then
+                catFrame.Visible = anyVisible
+            end
+        end
+    end
+    -- layout AbsoluteContentSize change handler will update CanvasSize for scrolling
+end
+
+-- Debounced search: apply after a short pause in typing
+local function scheduleSearch(text)
+    local current = text
+    task.delay(0.15, function()
+        -- only apply if text hasn't changed
+        if searchBox.Text == current then
+            applySearch(current)
+        end
+    end)
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    scheduleSearch(searchBox.Text)
+end)
+
+searchBox.FocusLost:Connect(function(enterPressed)
+    -- immediate apply when focus lost
+    applySearch(searchBox.Text)
+end)
+
+clearSearchBtn.MouseButton1Click:Connect(function()
+    searchBox.Text = ""
+    applySearch("")
 end)
 
 -- Dragging logic (unchanged)
