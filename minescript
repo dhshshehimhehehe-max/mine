@@ -1,36 +1,56 @@
 -- TeleportOreUI.lua
--- LocalScript for a draggable, minimizable UI that lists ores in categories and teleports the player to a clicked ore type.
--- Behavior:
---  - Detects which world (PlaceId) you're in and applies the appropriate excluded-ore blacklist.
---  - Scans workspace.Mine for ore parts and groups available ore types into categories (Stone, Metal, Gem, Other).
---  - Builds a UI in PlayerGui that's draggable and minimizable. Each ore type is a button that shows current available count.
---  - Clicking an ore button teleports your character to the nearest ore of that type. If that ore is mined, clicking again will try to teleport to another available ore of the same type.
---  - The UI automatically refreshes when ores are added/removed in workspace.Mine.
--- Note: This script is written as a LocalScript and should run in a LocalPlayer context.
+-- LocalScript — same functionality as before but optimized to avoid freezing when the UI loads.
+-- Changes:
+--  - Uses a master ore list per world so the UI can show "all ores" (including count 0) without building UI from live parts.
+--  - Creates buttons in small batches (chunked creation) so the game doesn't freeze while the UI is built.
+--  - Performs initial part-count scan in batches to avoid a single big-frame scan.
+--  - Keeps incremental bookkeeping (partsByName) so we don't rescan the whole folder every frame.
+--  - Adds an option to toggle counts (turn off live counts to reduce updates further).
+-- Place this as a LocalScript under StarterGui or otherwise run in a LocalPlayer context.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local task = task
 local player = Players.LocalPlayer
 
 if not player then
-    -- If running too early, wait for player
     player = Players:GetPropertyChangedSignal("LocalPlayer") and Players.LocalPlayer or Players.PlayerAdded:Wait()
 end
 
 local playerGui = player:WaitForChild("PlayerGui")
 local workspace = game:GetService("Workspace")
 
--- Determine excluded ores per PlaceId (the lists you provided are used as blacklist)
-local excludedOres = {}
+-- === Master ore lists per PlaceId ===
+-- Populate with the ore names you want shown in the UI (all ores, even if they don't exist yet).
+local masterOreList = {}
 if game.PlaceId == 8549934015 then -- Normal World
-    excludedOres = {"Magma", "Stone", "Copper", "Basalt", "Amber", "Diorite", "Coal", "Crystallized Stone", "Nickel", "Bedrock", "Gold", "Granite", "Iron", "Marble", "Etherstone", "Prismatistone","Silver","Obsidian","Ice","Voidstone","Ruby","Celestone","Mantle","Goldstone","Barrier","Quartz","Reflectistone","Emerald"}
+    masterOreList = {
+        "Magma","Stone","Copper","Basalt","Amber","Diorite","Coal","Crystallized Stone","Nickel","Bedrock","Gold","Granite","Iron",
+        "Marble","Etherstone","Prismatistone","Silver","Obsidian","Ice","Voidstone","Ruby","Celestone","Mantle","Goldstone","Barrier",
+        "Quartz","Reflectistone","Emerald",
+        -- add any other ore names you want shown
+    }
 elseif game.PlaceId == 10129505074 then -- Moon World
-    excludedOres = {"Moon Stone", "Tin", "Moon Mantle", "Jasper", "Aluminum", "Moon Core", "Zinc", "Coal", "Magma", "Copper", "Titanium", "Legacy Uranium", "Lithium", "Nickel", "Quartz", "Gold", "Tourmaline","Jade","Silver","Lapis Lazuli","Bismuth","Nebula","Strontium","Scandium","Platinum","Amethyst","Barrier","Garnet","Cobalt","Emerald","Heliodor","Aquamarine","Topaz","Diamond","Beryllium","Morganite","Ruby","Rocc","Moonrock","nil"}
+    masterOreList = {
+        "Moon Stone","Tin","Moon Mantle","Jasper","Aluminum","Moon Core","Zinc","Coal","Magma","Copper","Titanium","Legacy Uranium",
+        "Lithium","Nickel","Quartz","Gold","Tourmaline","Jade","Silver","Lapis Lazuli","Bismuth","Nebula","Strontium","Scandium",
+        "Platinum","Amethyst","Barrier","Garnet","Cobalt","Emerald","Heliodor","Aquamarine","Topaz","Diamond","Beryllium","Morganite",
+        "Ruby","Rocc","Moonrock",
+        -- add any other ore names you want shown
+    }
 else
-    -- Default: empty blacklist
-    excludedOres = {}
+    -- fallback: small example list to avoid building an enormous UI by accident
+    masterOreList = {"Stone", "Iron", "Gold", "Diamond"}
+end
+
+-- Blacklist (keeps the prior behavior if you still want to exclude some names from scanning/bookkeeping)
+local excludedOres = {}
+if game.PlaceId == 8549934015 then
+    excludedOres = {"Magma", "Stone"} -- trim if needed; but we keep master list for UI display
+elseif game.PlaceId == 10129505074 then
+    excludedOres = {} -- example
 end
 
 local function isExcluded(name)
@@ -49,7 +69,7 @@ local mineFolder = workspace:FindFirstChild("Mine") or workspace:WaitForChild("M
 local categoryKeywords = {
     Stone = {"stone", "rock", "bedrock", "mantle", "moon rock", "moonrock"},
     Metal = {"iron", "copper", "gold", "nickel", "tin", "aluminum", "platinum", "titanium", "zinc", "bismuth", "beryllium", "scandium", "strontium", "cobalt"},
-    Gem = {"ruby", "emerald", "diamond", "amethyst", "jade", "topaz", "aquamarine", "garnet", "morganite", "tourmaline", "opal", "heliodor", "lapis", "opal"},
+    Gem = {"ruby", "emerald", "diamond", "amethyst", "jade", "topaz", "aquamarine", "garnet", "morganite", "tourmaline", "opal", "heliodor", "lapis"},
 }
 
 local function categorizeOre(name)
@@ -64,13 +84,12 @@ local function categorizeOre(name)
     return "Other"
 end
 
--- GUI creation
+-- === GUI creation (same look) ===
 local gui = Instance.new("ScreenGui")
 gui.Name = "OreTeleportUI"
 gui.ResetOnSpawn = false
 gui.Parent = playerGui
 
--- Main frame / title bar
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "Main"
 mainFrame.Size = UDim2.new(0, 360, 0, 420)
@@ -89,7 +108,7 @@ titleBar.Parent = mainFrame
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Name = "Title"
-titleLabel.Size = UDim2.new(1, -70, 1, 0)
+titleLabel.Size = UDim2.new(1, -100, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Text = "Ore Teleport"
@@ -109,6 +128,19 @@ minimizeBtn.Font = Enum.Font.GothamBold
 minimizeBtn.TextColor3 = Color3.fromRGB(200,200,200)
 minimizeBtn.TextScaled = true
 minimizeBtn.Parent = titleBar
+
+-- Toggle to enable/disable counts (reduces UI updates if you turn counts off)
+local showCounts = true
+local toggleCountsBtn = Instance.new("TextButton")
+toggleCountsBtn.Name = "ToggleCounts"
+toggleCountsBtn.Size = UDim2.new(0, 80, 0, 22)
+toggleCountsBtn.Position = UDim2.new(1, -130, 0, 6)
+toggleCountsBtn.BackgroundColor3 = Color3.fromRGB(50,50,55)
+toggleCountsBtn.Text = "Counts: On"
+toggleCountsBtn.Font = Enum.Font.Gotham
+toggleCountsBtn.TextSize = 14
+toggleCountsBtn.TextColor3 = Color3.fromRGB(220,220,220)
+toggleCountsBtn.Parent = titleBar
 
 local contentFrame = Instance.new("Frame")
 contentFrame.Name = "Content"
@@ -131,15 +163,12 @@ layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Padding = UDim.new(0, 6)
 layout.Parent = scroll
 
--- For storing buttons by ore name
-local oreButtons = {}
+-- For storing UI objects and part bookkeeping
+local oreButtons = {} -- oreName -> { Button, CountLabel }
+local partsByName = {} -- oreName -> { parts = { [part] = true }, count = n }
+local partConnections = {} -- part -> connection
 
--- More efficient part bookkeeping:
--- partsByName[name] = { parts = { [part] = true }, count = n }
-local partsByName = {}
-local partConnections = {} -- track per-part AncestryChanged connections so we can disconnect
-
--- Highlight / optional box adornment on target ore
+-- Highlight (unchanged)
 local currentHighlight = nil
 local function clearHighlight()
     if currentHighlight and currentHighlight.Parent then
@@ -147,7 +176,6 @@ local function clearHighlight()
     end
     currentHighlight = nil
 end
-
 local function createHighlight(part)
     clearHighlight()
     if not part or not part:IsA("BasePart") then return end
@@ -161,19 +189,18 @@ local function createHighlight(part)
     currentHighlight = box
 end
 
--- Teleport function (unchanged)
+-- Teleport (uses partsByName so we don't scan the folder at click time)
 local function teleportToOre(oreName)
     if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
         player.CharacterAdded:Wait()
-        repeat wait() until player.Character:FindFirstChild("HumanoidRootPart")
+        repeat task.wait() until player.Character:FindFirstChild("HumanoidRootPart")
     end
     local hrp = player.Character.HumanoidRootPart
     local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
-    local nearest = nil
-    local nearestDist = math.huge
     local entry = partsByName[oreName]
+    local nearest, nearestDist = nil, math.huge
     if entry then
         for part,_ in pairs(entry.parts) do
             if part and part:IsA("BasePart") then
@@ -198,16 +225,45 @@ local function teleportToOre(oreName)
     end
 end
 
--- GUI helper: create a button for an ore type (called only when an ore type first appears)
+-- Create category frames (if needed) and grid containers
+local function ensureCategoryExists(catName)
+    if scroll:FindFirstChild("Grid_" .. catName) then return end
+    local catFrame = Instance.new("Frame")
+    catFrame.Name = "Category_" .. catName
+    catFrame.Size = UDim2.new(1, -6, 0, 28)
+    catFrame.BackgroundTransparency = 1
+    catFrame.Parent = scroll
+
+    local catLabel = Instance.new("TextLabel")
+    catLabel.Size = UDim2.new(1, 0, 1, 0)
+    catLabel.BackgroundTransparency = 1
+    catLabel.Text = catName
+    catLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    catLabel.Font = Enum.Font.GothamBold
+    catLabel.TextScaled = true
+    catLabel.Parent = catFrame
+
+    local grid = Instance.new("Frame")
+    grid.Name = "Grid_" .. catName
+    grid.Size = UDim2.new(1, 0, 0, 0)
+    grid.BackgroundTransparency = 1
+    grid.Parent = scroll
+
+    local gridLayout = Instance.new("UIGridLayout")
+    gridLayout.CellSize = UDim2.new(0, 110, 0, 36)
+    gridLayout.CellPadding = UDim2.new(0, 6, 0, 6)
+    gridLayout.FillDirection = Enum.FillDirection.Horizontal
+    gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    gridLayout.Parent = grid
+end
+
+-- Create a single button for oreName
 local function createButtonForOre(oreName)
+    if oreButtons[oreName] then return end
     local cat = categorizeOre(oreName)
-    -- Try to find an existing category grid for this category; if not found, rebuild full UI
+    ensureCategoryExists(cat)
     local grid = scroll:FindFirstChild("Grid_" .. cat)
-    if not grid then
-        -- Category not present yet — rebuild the full UI (rare)
-        spawn(rebuildUI)
-        return
-    end
+    if not grid then return end
 
     local btn = Instance.new("TextButton")
     btn.Name = "OreBtn_" .. oreName
@@ -219,7 +275,6 @@ local function createButtonForOre(oreName)
     btn.TextSize = 14
     btn.TextColor3 = Color3.fromRGB(230,230,230)
     btn.AutoButtonColor = true
-    btn.LayoutOrder = 1
     btn.Parent = grid
 
     local countLabel = Instance.new("TextLabel")
@@ -232,6 +287,7 @@ local function createButtonForOre(oreName)
     countLabel.TextSize = 14
     countLabel.TextColor3 = Color3.fromRGB(170,170,170)
     countLabel.Parent = btn
+    countLabel.Visible = showCounts
 
     btn.MouseButton1Click:Connect(function()
         teleportToOre(oreName)
@@ -243,100 +299,42 @@ local function createButtonForOre(oreName)
     }
 end
 
--- Rebuild the whole UI (runs rarely: initial load or when categories change)
-function rebuildUI()
-    -- Clear previous category frames (but keep template if any)
-    for _, child in ipairs(scroll:GetChildren()) do
-        if child:IsA("Frame") and child.Name:match("^Category_") then
-            child:Destroy()
-        elseif child:IsA("Frame") and child.Name:match("^Grid_") then
-            child:Destroy()
+-- Build all buttons from master list in batches to avoid freezing
+local function buildButtonsInBatches(list, batchSize)
+    batchSize = batchSize or 25
+    local i = 1
+    while i <= #list do
+        local last = math.min(#list, i + batchSize - 1)
+        for j = i, last do
+            createButtonForOre(list[j])
         end
+        -- let the engine breathe for a frame
+        task.wait()
+        i = last + 1
     end
 
-    oreButtons = {}
-
-    -- Compute oreTypes from partsByName
-    local oreTypes = {}
-    for name, entry in pairs(partsByName) do
-        if entry.count and entry.count > 0 then
-            oreTypes[name] = true
-        end
-    end
-
-    local categories = {}
-    for oreName, _ in pairs(oreTypes) do
-        local cat = categorizeOre(oreName)
-        categories[cat] = categories[cat] or {}
-        table.insert(categories[cat], oreName)
-    end
-
-    local catNames = {}
-    for k in pairs(categories) do table.insert(catNames, k) end
-    table.sort(catNames)
-
-    local yOffset = 0
-    for _, catName in ipairs(catNames) do
-        local catFrame = Instance.new("Frame")
-        catFrame.Name = "Category_" .. catName
-        catFrame.Size = UDim2.new(1, -6, 0, 28)
-        catFrame.LayoutOrder = yOffset
-        catFrame.BackgroundTransparency = 1
-        catFrame.Parent = scroll
-
-        local catLabel = Instance.new("TextLabel")
-        catLabel.Size = UDim2.new(1, 0, 1, 0)
-        catLabel.BackgroundTransparency = 1
-        catLabel.Text = catName
-        catLabel.TextColor3 = Color3.fromRGB(200,200,200)
-        catLabel.Font = Enum.Font.GothamBold
-        catLabel.TextScaled = true
-        catLabel.Parent = catFrame
-
-        local grid = Instance.new("Frame")
-        grid.Name = "Grid_" .. catName
-        grid.Size = UDim2.new(1, 0, 0, 0) -- will grow
-        grid.BackgroundTransparency = 1
-        grid.Parent = scroll
-
-        local gridLayout = Instance.new("UIGridLayout")
-        gridLayout.CellSize = UDim2.new(0, 110, 0, 36)
-        gridLayout.CellPadding = UDim2.new(0, 6, 0, 6)
-        gridLayout.FillDirection = Enum.FillDirection.Horizontal
-        gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
-        gridLayout.Parent = grid
-
-        table.sort(categories[catName])
-        for _, oreName in ipairs(categories[catName]) do
-            createButtonForOre(oreName)
-        end
-
-        yOffset = yOffset + 1
-    end
-
-    -- Adjust canvas size after layout finishes
+    -- After creating all, adjust canvas size later
     task.defer(function()
-        wait() -- allow layouts to compute
+        task.wait()
         local contentSize = layout.AbsoluteContentSize
         scroll.CanvasSize = UDim2.new(0, 0, 0, contentSize.Y + 8)
     end)
 end
 
--- Efficient part add/remove functions:
+-- Efficient add/remove bookkeeping (incremental)
 local function updateButtonCount(oreName)
     local entry = partsByName[oreName]
     local count = (entry and entry.count) or 0
     local btnObj = oreButtons[oreName]
     if btnObj and btnObj.Count then
-        local prev = tonumber(btnObj.Count.Text) or 0
-        if prev ~= count then
+        if btnObj.Count.Text ~= tostring(count) then
             btnObj.Count.Text = tostring(count)
             btnObj.Button.Active = count > 0
             btnObj.Button.BackgroundColor3 = count > 0 and Color3.fromRGB(42,42,48) or Color3.fromRGB(28,28,30)
             btnObj.Button.TextTransparency = count > 0 and 0 or 0.4
         end
     else
-        -- If button doesn't exist but we have parts for this ore => create button (lazy)
+        -- create button lazily if a new ore type showed up
         if count > 0 then
             createButtonForOre(oreName)
             updateButtonCount(oreName)
@@ -352,8 +350,8 @@ local function removePart(part)
         entry.parts[part] = nil
         entry.count = entry.count - 1
         if entry.count <= 0 then
-            partsByName[name] = nil
-            -- keep the button but disable it (faster than destroying the UI)
+            -- Keep entry to avoid re-creating UI repeatedly; set count=0
+            entry.count = 0
         end
         updateButtonCount(name)
     end
@@ -373,7 +371,7 @@ local function addPart(part)
         partsByName[name].count = partsByName[name].count + 1
     end
 
-    -- connect to AncestryChanged to detect removal or parent nil -> cleanup
+    -- connect to AncestryChanged to detect removal
     local conn = part.AncestryChanged:Connect(function(_, parent)
         if not parent then
             removePart(part)
@@ -384,51 +382,67 @@ local function addPart(part)
     updateButtonCount(name)
 end
 
--- Initial single pass scan (only once) to populate partsByName
-do
+-- Initial population: create all buttons (from master list) in batches (non-blocking)
+buildButtonsInBatches(masterOreList, 20)
+
+-- Initial scan of mine folder done in batches to avoid freezing.
+task.spawn(function()
     local children = mineFolder:GetChildren()
-    for _, child in ipairs(children) do
-        if child:IsA("BasePart") and not isExcluded(child.Name) then
-            addPart(child)
+    local batch = 200 -- number of parts to process per tick; tune to your performance
+    local idx = 1
+    while idx <= #children do
+        local last = math.min(#children, idx + batch - 1)
+        for i = idx, last do
+            local child = children[i]
+            if child and child:IsA("BasePart") and not isExcluded(child.Name) then
+                addPart(child)
+            end
         end
+        idx = last + 1
+        task.wait() -- yield for a frame to avoid stall
     end
-end
+end)
 
--- Rebuild UI once after initial scan
-rebuildUI()
-
--- Connect to ChildAdded/ChildRemoved but keep work minimal: only add/remove single part,
--- don't full-scan. Rebuild UI only if category is new (handled lazily in createButtonForOre).
+-- Connect to ChildAdded/Removed to update incrementally
 mineFolder.ChildAdded:Connect(function(child)
-    -- quick add
+    -- handle pieces that are added after initial scan
     addPart(child)
 end)
 
 mineFolder.ChildRemoved:Connect(function(child)
-    -- child may already have been handled by AncestryChanged, but handle just in case
     removePart(child)
 end)
 
--- Throttled refresh: we don't scan all ores every frame; we only update UI labels when values change.
--- Use a simple timer to call updateButtonCount for all known oreButtons at most every 0.5s
-local lastRefresh = 0
-local REFRESH_INTERVAL = 0.5
-
+-- Periodic refresh of visible button counts (throttled)
+-- Because we update counts incrementally, we only need to refresh occasionally.
+local REFRESH_INTERVAL = 1.0 -- once per second; raise if still heavy
+local elapsed = 0
 RunService.Heartbeat:Connect(function(dt)
-    lastRefresh = lastRefresh + dt
-    if lastRefresh >= REFRESH_INTERVAL then
-        lastRefresh = 0
-        -- update visible buttons counts (cheap: iterate oreButtons keys, not all parts)
-        for oreName, _ in pairs(oreButtons) do
-            updateButtonCount(oreName)
+    elapsed = elapsed + dt
+    if elapsed >= REFRESH_INTERVAL then
+        elapsed = 0
+        if showCounts then
+            for oreName, _ in pairs(oreButtons) do
+                updateButtonCount(oreName)
+            end
         end
     end
 end)
 
--- Dragging logic for titleBar (unchanged)
+-- Toggle counts button behavior
+toggleCountsBtn.MouseButton1Click:Connect(function()
+    showCounts = not showCounts
+    toggleCountsBtn.Text = showCounts and "Counts: On" or "Counts: Off"
+    for _, v in pairs(oreButtons) do
+        if v.Count then
+            v.Count.Visible = showCounts
+        end
+    end
+end)
+
+-- Dragging logic (unchanged)
 local dragging = false
 local dragInput, dragStart, startPos
-
 local function updatePosition(input)
     local delta = input.Position - dragStart
     mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
@@ -473,7 +487,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Keybind to teleport to random available ore (kept but uses partsByName now)
+-- Random-teleport hotkey (uses partsByName)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.Nine then
@@ -490,20 +504,20 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- Keep UI alive on respawn: re-parent if PlayerGui resets
+-- Keep GUI alive on respawn
 player.CharacterAdded:Connect(function()
-    wait(0.2)
+    task.wait(0.2)
     if not gui.Parent then
         gui.Parent = playerGui
     end
 end)
 
--- Clean up on script destroy
+-- Cleanup on destroy
 script.Destroying:Connect(function()
     clearHighlight()
-    for c,_ in pairs(partConnections) do
-        if c and c.Disconnect then
-            c:Disconnect()
+    for _, conn in pairs(partConnections) do
+        if conn and conn.Disconnect then
+            conn:Disconnect()
         end
     end
 end)
