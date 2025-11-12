@@ -134,6 +134,11 @@ layout.Parent = scroll
 -- For storing buttons by ore name
 local oreButtons = {}
 
+-- More efficient part bookkeeping:
+-- partsByName[name] = { parts = { [part] = true }, count = n }
+local partsByName = {}
+local partConnections = {} -- track per-part AncestryChanged connections so we can disconnect
+
 -- Highlight / optional box adornment on target ore
 local currentHighlight = nil
 local function clearHighlight()
@@ -152,11 +157,11 @@ local function createHighlight(part)
     box.Size = part.Size + Vector3.new(0.08, 0.08, 0.08)
     box.ZIndex = 10
     box.Color = part.Color
-    box.Parent = game:GetService("CoreGui") -- Adornments often live in CoreGui
+    box.Parent = game:GetService("CoreGui")
     currentHighlight = box
 end
 
--- Teleport function: teleport local player to nearest ore of a given name
+-- Teleport function (unchanged)
 local function teleportToOre(oreName)
     if not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
         player.CharacterAdded:Wait()
@@ -168,55 +173,97 @@ local function teleportToOre(oreName)
 
     local nearest = nil
     local nearestDist = math.huge
-    for _, part in ipairs(mineFolder:GetChildren()) do
-        if part:IsA("BasePart") and part.Name == oreName and not isExcluded(part.Name) then
-            local dist = (hrp.Position - part.Position).Magnitude
-            if dist < nearestDist then
-                nearest = part
-                nearestDist = dist
+    local entry = partsByName[oreName]
+    if entry then
+        for part,_ in pairs(entry.parts) do
+            if part and part:IsA("BasePart") then
+                local dist = (hrp.Position - part.Position).Magnitude
+                if dist < nearestDist then
+                    nearest = part
+                    nearestDist = dist
+                end
             end
         end
     end
 
     if nearest then
-        -- Teleport slightly above the ore
         local targetCFrame = nearest.CFrame + Vector3.new(0, 6.5, 0)
-        -- Try to set CFrame safely
         if humanoid and humanoid.Sit then
             humanoid.Sit = false
         end
         hrp.CFrame = targetCFrame
         createHighlight(nearest)
     else
-        -- No ore found: clear highlight and optionally flash button
         clearHighlight()
-        -- simple feedback: print (you can replace with GUI feedback)
-        -- print("No more ores of type:", oreName)
     end
 end
 
--- Build the UI categories and buttons based on current ores
-local function rebuildUI()
-    -- Clear previous category frames
+-- GUI helper: create a button for an ore type (called only when an ore type first appears)
+local function createButtonForOre(oreName)
+    local cat = categorizeOre(oreName)
+    -- Try to find an existing category grid for this category; if not found, rebuild full UI
+    local grid = scroll:FindFirstChild("Grid_" .. cat)
+    if not grid then
+        -- Category not present yet — rebuild the full UI (rare)
+        spawn(rebuildUI)
+        return
+    end
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "OreBtn_" .. oreName
+    btn.Size = UDim2.new(0, 110, 0, 36)
+    btn.BackgroundColor3 = Color3.fromRGB(42, 42, 48)
+    btn.BorderSizePixel = 0
+    btn.Text = oreName
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 14
+    btn.TextColor3 = Color3.fromRGB(230,230,230)
+    btn.AutoButtonColor = true
+    btn.LayoutOrder = 1
+    btn.Parent = grid
+
+    local countLabel = Instance.new("TextLabel")
+    countLabel.Name = "Count"
+    countLabel.Size = UDim2.new(0, 34, 1, 0)
+    countLabel.Position = UDim2.new(1, -36, 0, 0)
+    countLabel.BackgroundTransparency = 1
+    countLabel.Text = "0"
+    countLabel.Font = Enum.Font.Gotham
+    countLabel.TextSize = 14
+    countLabel.TextColor3 = Color3.fromRGB(170,170,170)
+    countLabel.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        teleportToOre(oreName)
+    end)
+
+    oreButtons[oreName] = {
+        Button = btn,
+        Count = countLabel,
+    }
+end
+
+-- Rebuild the whole UI (runs rarely: initial load or when categories change)
+function rebuildUI()
+    -- Clear previous category frames (but keep template if any)
     for _, child in ipairs(scroll:GetChildren()) do
-        if child:IsA("Frame") and child.Name ~= "Template" then
+        if child:IsA("Frame") and child.Name:match("^Category_") then
+            child:Destroy()
+        elseif child:IsA("Frame") and child.Name:match("^Grid_") then
             child:Destroy()
         end
     end
+
     oreButtons = {}
 
-    -- Gather ore types available (excluding blacklisted)
+    -- Compute oreTypes from partsByName
     local oreTypes = {}
-    for _, part in ipairs(mineFolder:GetChildren()) do
-        if part:IsA("BasePart") then
-            local name = part.Name
-            if name and not isExcluded(name) then
-                oreTypes[name] = true
-            end
+    for name, entry in pairs(partsByName) do
+        if entry.count and entry.count > 0 then
+            oreTypes[name] = true
         end
     end
 
-    -- Group ore types into categories
     local categories = {}
     for oreName, _ in pairs(oreTypes) do
         local cat = categorizeOre(oreName)
@@ -224,7 +271,6 @@ local function rebuildUI()
         table.insert(categories[cat], oreName)
     end
 
-    -- Sort category names for stable UI order
     local catNames = {}
     for k in pairs(categories) do table.insert(catNames, k) end
     table.sort(catNames)
@@ -260,93 +306,126 @@ local function rebuildUI()
         gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
         gridLayout.Parent = grid
 
-        -- Create buttons for each ore in this category
         table.sort(categories[catName])
         for _, oreName in ipairs(categories[catName]) do
-            local btn = Instance.new("TextButton")
-            btn.Name = "OreBtn_" .. oreName
-            btn.Size = UDim2.new(0, 110, 0, 36)
-            btn.BackgroundColor3 = Color3.fromRGB(42, 42, 48)
-            btn.BorderSizePixel = 0
-            btn.Text = oreName
-            btn.Font = Enum.Font.Gotham
-            btn.TextSize = 14
-            btn.TextColor3 = Color3.fromRGB(230,230,230)
-            btn.AutoButtonColor = true
-            btn.LayoutOrder = 1
-            btn.Parent = grid
-
-            local countLabel = Instance.new("TextLabel")
-            countLabel.Name = "Count"
-            countLabel.Size = UDim2.new(0, 34, 1, 0)
-            countLabel.Position = UDim2.new(1, -36, 0, 0)
-            countLabel.BackgroundTransparency = 1
-            countLabel.Text = "0"
-            countLabel.Font = Enum.Font.Gotham
-            countLabel.TextSize = 14
-            countLabel.TextColor3 = Color3.fromRGB(170,170,170)
-            countLabel.Parent = btn
-
-            -- Click behavior: teleport to nearest ore of this type
-            btn.MouseButton1Click:Connect(function()
-                teleportToOre(oreName)
-            end)
-
-            oreButtons[oreName] = {
-                Button = btn,
-                Count = countLabel,
-            }
+            createButtonForOre(oreName)
         end
 
         yOffset = yOffset + 1
     end
 
-    -- Adjust canvas size
-    RunService.Heartbeat:Once(function()
-        -- Slight delay to let layouts compute
+    -- Adjust canvas size after layout finishes
+    task.defer(function()
+        wait() -- allow layouts to compute
         local contentSize = layout.AbsoluteContentSize
         scroll.CanvasSize = UDim2.new(0, 0, 0, contentSize.Y + 8)
     end)
 end
 
--- Update counts for each ore button (call frequently or when children change)
-local function refreshCounts()
-    local counts = {}
-    for _, part in ipairs(mineFolder:GetChildren()) do
-        if part:IsA("BasePart") and not isExcluded(part.Name) then
-            counts[part.Name] = (counts[part.Name] or 0) + 1
+-- Efficient part add/remove functions:
+local function updateButtonCount(oreName)
+    local entry = partsByName[oreName]
+    local count = (entry and entry.count) or 0
+    local btnObj = oreButtons[oreName]
+    if btnObj and btnObj.Count then
+        local prev = tonumber(btnObj.Count.Text) or 0
+        if prev ~= count then
+            btnObj.Count.Text = tostring(count)
+            btnObj.Button.Active = count > 0
+            btnObj.Button.BackgroundColor3 = count > 0 and Color3.fromRGB(42,42,48) or Color3.fromRGB(28,28,30)
+            btnObj.Button.TextTransparency = count > 0 and 0 or 0.4
         end
-    end
-    for oreName, btnObj in pairs(oreButtons) do
-        local n = counts[oreName] or 0
-        if btnObj.Count then
-            btnObj.Count.Text = tostring(n)
+    else
+        -- If button doesn't exist but we have parts for this ore => create button (lazy)
+        if count > 0 then
+            createButtonForOre(oreName)
+            updateButtonCount(oreName)
         end
-        -- Optionally disable button if no ores
-        btnObj.Button.Active = n > 0
-        btnObj.Button.BackgroundColor3 = n > 0 and Color3.fromRGB(42,42,48) or Color3.fromRGB(28,28,30)
-        btnObj.Button.TextTransparency = n > 0 and 0 or 0.4
     end
 end
 
--- Watch for mine folder changes to rebuild UI if needed
+local function removePart(part)
+    if not part or not part.Name then return end
+    local name = part.Name
+    local entry = partsByName[name]
+    if entry and entry.parts[part] then
+        entry.parts[part] = nil
+        entry.count = entry.count - 1
+        if entry.count <= 0 then
+            partsByName[name] = nil
+            -- keep the button but disable it (faster than destroying the UI)
+        end
+        updateButtonCount(name)
+    end
+    if partConnections[part] then
+        partConnections[part]:Disconnect()
+        partConnections[part] = nil
+    end
+end
+
+local function addPart(part)
+    if not part or not part:IsA("BasePart") then return end
+    local name = part.Name
+    if isExcluded(name) then return end
+    partsByName[name] = partsByName[name] or { parts = {}, count = 0 }
+    if not partsByName[name].parts[part] then
+        partsByName[name].parts[part] = true
+        partsByName[name].count = partsByName[name].count + 1
+    end
+
+    -- connect to AncestryChanged to detect removal or parent nil -> cleanup
+    local conn = part.AncestryChanged:Connect(function(_, parent)
+        if not parent then
+            removePart(part)
+        end
+    end)
+    partConnections[part] = conn
+
+    updateButtonCount(name)
+end
+
+-- Initial single pass scan (only once) to populate partsByName
+do
+    local children = mineFolder:GetChildren()
+    for _, child in ipairs(children) do
+        if child:IsA("BasePart") and not isExcluded(child.Name) then
+            addPart(child)
+        end
+    end
+end
+
+-- Rebuild UI once after initial scan
+rebuildUI()
+
+-- Connect to ChildAdded/ChildRemoved but keep work minimal: only add/remove single part,
+-- don't full-scan. Rebuild UI only if category is new (handled lazily in createButtonForOre).
 mineFolder.ChildAdded:Connect(function(child)
-    -- Small debounce to avoid rebuild thrash
-    rebuildUI()
-    refreshCounts()
+    -- quick add
+    addPart(child)
 end)
+
 mineFolder.ChildRemoved:Connect(function(child)
-    rebuildUI()
-    refreshCounts()
+    -- child may already have been handled by AncestryChanged, but handle just in case
+    removePart(child)
 end)
 
--- Also periodically refresh counts in case ores are mined/respawned without ChildAdded/Removed triggers
-local heartbeatConn
-heartbeatConn = RunService.Heartbeat:Connect(function(dt)
-    refreshCounts()
+-- Throttled refresh: we don't scan all ores every frame; we only update UI labels when values change.
+-- Use a simple timer to call updateButtonCount for all known oreButtons at most every 0.5s
+local lastRefresh = 0
+local REFRESH_INTERVAL = 0.5
+
+RunService.Heartbeat:Connect(function(dt)
+    lastRefresh = lastRefresh + dt
+    if lastRefresh >= REFRESH_INTERVAL then
+        lastRefresh = 0
+        -- update visible buttons counts (cheap: iterate oreButtons keys, not all parts)
+        for oreName, _ in pairs(oreButtons) do
+            updateButtonCount(oreName)
+        end
+    end
 end)
 
--- Dragging logic for titleBar
+-- Dragging logic for titleBar (unchanged)
 local dragging = false
 local dragInput, dragStart, startPos
 
@@ -386,38 +465,21 @@ local originalSize = mainFrame.Size
 minimizeBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
     if minimized then
-        -- Shrink content
-        local goal = {Size = UDim2.new(originalSize.X.Scale, originalSize.X.Offset, 0, 34)}
-        TweenService:Create(mainFrame, TweenInfo.new(0.18), goal):Play()
+        TweenService:Create(mainFrame, TweenInfo.new(0.18), {Size = UDim2.new(originalSize.X.Scale, originalSize.X.Offset, 0, 34)}):Play()
         contentFrame.Visible = false
     else
         contentFrame.Visible = true
-        local goal = {Size = originalSize}
         TweenService:Create(mainFrame, TweenInfo.new(0.18), {Size = originalSize}):Play()
     end
 end)
 
--- Initial build
-rebuildUI()
-refreshCounts()
-
--- Keep UI alive on respawn: re-parent if PlayerGui resets
-player.CharacterAdded:Connect(function()
-    wait(0.2)
-    -- ensure gui present after respawn
-    if not gui.Parent then
-        gui.Parent = playerGui
-    end
-end)
-
--- Optional: keybind to teleport to random available ore (kept from your original script)
+-- Keybind to teleport to random available ore (kept but uses partsByName now)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Enum.KeyCode.Nine then
-        -- Teleport to a random available ore type
         local availableTypes = {}
-        for oreName, data in pairs(oreButtons) do
-            if tonumber(data.Count.Text) and tonumber(data.Count.Text) > 0 then
+        for oreName, entry in pairs(partsByName) do
+            if entry.count and entry.count > 0 then
                 table.insert(availableTypes, oreName)
             end
         end
@@ -428,8 +490,20 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
+-- Keep UI alive on respawn: re-parent if PlayerGui resets
+player.CharacterAdded:Connect(function()
+    wait(0.2)
+    if not gui.Parent then
+        gui.Parent = playerGui
+    end
+end)
+
 -- Clean up on script destroy
 script.Destroying:Connect(function()
     clearHighlight()
-    if heartbeatConn then heartbeatConn:Disconnect() end
+    for c,_ in pairs(partConnections) do
+        if c and c.Disconnect then
+            c:Disconnect()
+        end
+    end
 end)
